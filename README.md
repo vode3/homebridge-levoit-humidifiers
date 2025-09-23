@@ -62,9 +62,11 @@ This is a Homebridge plugin to control Levoit Humidifiers from Apple HomeKit.
 
 ### Configuration
 
+* Make sure 2FA is disabled on your VeSync account. 
 * Via the Homebridge UI, enter the Homebridge VeSync Client plugin settings.
 * Enter your VeSync app credentials.
 * Select which controls you want exposed. Humidity / Auto Mode can not be hidden.
+* Enter your 2-letter country ISO code (eg. US, DE, FR).
 * Setup the platform plugin as a child bridge for better performance
 * Save and restart Homebridge.
 
@@ -101,7 +103,8 @@ Via config.json:
         "humidity_sensor": true
       },
       "options": {
-        "showOffWhenDisconnected": false
+        "showOffWhenDisconnected": false,
+        "countryCode": "US"
       }
     }
   ]
