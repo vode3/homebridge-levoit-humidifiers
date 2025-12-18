@@ -12,7 +12,7 @@ export enum Mode {
 }
 
 export default class VeSyncFan {
-  private lock: AsyncLock = new AsyncLock();
+  private readonly lock: AsyncLock = new AsyncLock();
   public readonly deviceType: DeviceType;
   private lastCheck = 0;
 
@@ -196,13 +196,13 @@ export default class VeSyncFan {
 
   public async changeMode(mode: Mode): Promise<boolean> {
     // LV600s models use "Humidity" mode instead of "Auto"
-    const humidity_models = [
+    const humidity_models: readonly DeviceName[] = [
       DeviceName.LV600S,
       DeviceName.LV600S_REMOTE,
       DeviceName.LV600S_EU,
       DeviceName.LV600S_UK,
       DeviceName.LV600S_JP,
-    ];
+    ] as const;
     if (
       humidity_models.includes(this.model as DeviceName) &&
       mode == Mode.Auto
@@ -507,7 +507,7 @@ export default class VeSyncFan {
     });
   }
 
-  public static fromResponse =
+  public static readonly fromResponse =
     (client: VeSync) =>
     ({
       deviceName,

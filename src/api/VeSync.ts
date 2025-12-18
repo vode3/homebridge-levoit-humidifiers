@@ -2,7 +2,7 @@ import axios, { AxiosInstance } from 'axios';
 import { Logger, PlatformConfig } from 'homebridge';
 import AsyncLock from 'async-lock';
 import { v4 as uuidv4 } from 'uuid';
-import * as crypto from 'crypto';
+import * as crypto from 'node:crypto';
 
 import deviceTypes from './deviceTypes';
 import DebugMode from '../debugMode';
@@ -21,46 +21,30 @@ export enum BypassMethod {
   DRYING_MODE = 'setDryingMode',
 }
 
+// Start on US host for a small set of known non-EU regions – everyone else uses EU
+const US_HOST = 'https://smartapi.vesync.com';
+const EU_HOST = 'https://smartapi.vesync.eu';
+const ACCOUNT_HOST = 'https://accountapi.vesync.com';
+
+/**
+ * Determine the initial base URL for a given country code.
+ * @param cc - The country code.
+ * @returns The initial base URL.
+ */
 function initialHostForCountry(cc: string): string {
   const upper = cc.toUpperCase();
   if (['US', 'CA', 'MX', 'JP'].includes(upper)) return US_HOST;
   return EU_HOST; // everything else starts on EU
 }
 
-function pickCountryCodeForRetry(step2Resp: any, originalCC: string): string {
-  const region = (step2Resp?.result?.currentRegion || step2Resp?.currentRegion || '').toUpperCase();
-  if (region === 'US') return 'US';
-
-  // Prefer server-provided countryCode if present
-  const serverCC = step2Resp?.result?.countryCode || step2Resp?.countryCode;
-  const cc = (serverCC || originalCC || '').toUpperCase();
-
-  // Basic sanity: must be 2 letters; otherwise keep original if valid, else fallback to 'US'
-  return /^[A-Z]{2}$/.test(cc) ? cc : (/^[A-Z]{2}$/.test(originalCC.toUpperCase()) ? originalCC.toUpperCase() : 'US');
-}
-
 const lock = new AsyncLock();
-
-// Known API hosts
-const US_HOST = 'https://smartapi.vesync.com';
-const EU_HOST = 'https://smartapi.vesync.eu';
-const ACCOUNT_HOST = 'https://accountapi.vesync.com';
-
-// Server error code indicating cross-region login is required
-const CROSS_REGION_CODE = -11260022;
-
-// Convert server region → host (default to US if unknown)
-function regionToHost(region?: string): string {
-  if (typeof region === 'string' && region.toUpperCase() === 'EU') return EU_HOST;
-  return US_HOST;
-}
 
 export default class VeSync {
   private api?: AxiosInstance;
   private accountId?: string;
   private token?: string;
 
-  // dynamic baseURL; starts with US then may flip to EU on cross-region
+  // dynamic baseURL; starts from config/country and may flip on cross-region
   private baseURL: string;
 
   private readonly VERSION = '5.6.60';
@@ -72,7 +56,7 @@ export default class VeSync {
   private readonly LANG = 'en';
 
   // Terminal/device identifier that VeSync expects to remain stable
-  private readonly terminalId = '2' + uuidv4().replace(/-/g, '');
+  private readonly terminalId = '2' + uuidv4().replaceAll('-', '');
   private readonly appID = Math.random().toString(36).substring(2, 10);
 
   constructor(
@@ -82,10 +66,12 @@ export default class VeSync {
     public readonly debugMode: DebugMode,
     public readonly log: Logger,
   ) {
-    // Allow explicit override via config.options.apiHost; otherwise start with US
     const cc = (config.options?.countryCode || 'US').toUpperCase();
     this.baseURL = config.options?.apiHost || initialHostForCountry(cc);
-    this.debugMode.debug?.('[CONFIG]', `countryCode=${cc}, initialBaseURL=${this.baseURL}`);
+    this.debugMode.debug?.(
+      '[CONFIG]',
+      `countryCode=${cc}, initialBaseURL=${this.baseURL}`,
+    );
   }
 
   private AXIOS_OPTIONS() {
@@ -124,9 +110,9 @@ export default class VeSync {
       timeZone: this.TIMEZONE,
       ...(includeAuth
         ? {
-          accountID: this.accountId,
-          token: this.token,
-        }
+            accountID: this.accountId,
+            token: this.token,
+          }
         : {}),
     };
   }
@@ -192,19 +178,19 @@ export default class VeSync {
       }
 
       const isSuccess = response?.data?.code === 0;
-      if (!isSuccess) {
-        this.debugMode.debug(
-          '[SEND COMMAND]',
-          `Failed to send command ${method} to ${fan.name}`,
-          `with (${JSON.stringify(body)})!`,
-          `Response: ${JSON.stringify(response?.data)}`,
-        );
-      } else {
+      if (isSuccess) {
         this.debugMode.debug(
           '[SEND COMMAND]',
           `Successfully sent command ${method} to ${fan.name}`,
           `with (${JSON.stringify(body)})!`,
           `Response: ${JSON.stringify(response.data)}`,
+        );
+      } else {
+        this.debugMode.debug(
+          '[SEND COMMAND]',
+          `Failed to send command ${method} to ${fan.name}`,
+          `with (${JSON.stringify(body)})!`,
+          `Response: ${JSON.stringify(response?.data)}`,
         );
       }
 
@@ -266,39 +252,44 @@ export default class VeSync {
         throw new Error('Email and password are required');
       }
 
-      const userCountryCode = (this.config.options?.countryCode || 'US').toUpperCase();
+      const userCountryCode = (
+        this.config.options?.countryCode || 'US'
+      ).toUpperCase();
 
       this.debugMode.debug('[LOGIN]', 'Step 1: authByPWDOrOTM…');
       const { authorizeCode, bizToken: initialBizToken } =
         await this.authByPWDOrOTM(userCountryCode);
 
-      this.debugMode.debug('[LOGIN]', `Step 2: loginByAuthorizeCode on ${this.baseURL}…`);
+      this.debugMode.debug(
+        '[LOGIN]',
+        `Step 2: loginByAuthorizeCode on ${this.baseURL}…`,
+      );
       let step2Resp = await this.loginByAuthorizeCode4Vesync({
         userCountryCode,
         authorizeCode,
         host: this.baseURL,
       });
 
-      if (step2Resp?.code === CROSS_REGION_CODE) {
-        const currentRegion =
-          step2Resp?.result?.currentRegion ||
-          step2Resp?.data?.currentRegion ||
-          step2Resp?.currentRegion;
+      // --- Cross-region handling -----------------
+      //
+      // Look at ErrorTypes.CROSS_REGION and a bizToken in the result.
+      // Any non-zero code with a bizToken means "try again in the correct
+      // region" using the countryCode returned by the server.
+      if (step2Resp && step2Resp.code !== 0 && step2Resp.result?.bizToken) {
+        const result = step2Resp.result;
 
-        const crossBizToken =
-          step2Resp?.result?.bizToken ||
-          step2Resp?.data?.bizToken ||
-          initialBizToken ||
-          null;
-
-        const regionHost = regionToHost(currentRegion);
-        const overrideCC = pickCountryCodeForRetry(step2Resp, userCountryCode);
+        const newCountryCode = (
+          result.countryCode || userCountryCode
+        ).toUpperCase();
+        const crossBizToken = result.bizToken || initialBizToken || null;
 
         this.debugMode.debug(
           '[LOGIN]',
-          `Cross-region detected (${currentRegion}). Retrying on ${regionHost} with bizToken and userCountryCode=${overrideCC} (regionChange=last_region)…`,
+          `Cross-region detected. Switching to countryCode=${newCountryCode} and retrying loginByAuthorizeCode4Vesync with regionChange=last_region…`,
         );
 
+        // Use country → host mapping like pyvesync._api_base_url_for_current_region()
+        const regionHost = initialHostForCountry(newCountryCode);
         this.baseURL = (this.config.options?.apiHost as string) || regionHost;
 
         step2Resp = await this.loginByAuthorizeCode4Vesync({
@@ -306,13 +297,20 @@ export default class VeSync {
           bizToken: crossBizToken,
           host: this.baseURL,
           regionChange: 'last_region',
-          overrideCountryCode: overrideCC,
-          currentRegion,
+          overrideCountryCode: newCountryCode,
+          currentRegion: result.currentRegion,
         });
       }
 
-      if (!step2Resp || step2Resp.code !== 0 || !step2Resp.result?.token || !step2Resp.result?.accountID) {
-        this.debugMode.debug('[LOGIN] Failed final step', JSON.stringify(step2Resp));
+      if (
+        step2Resp?.code !== 0 ||
+        !step2Resp.result?.token ||
+        !step2Resp.result?.accountID
+      ) {
+        this.debugMode.debug(
+          '[LOGIN] Failed final step',
+          JSON.stringify(step2Resp),
+        );
         return false;
       }
 
@@ -359,7 +357,10 @@ export default class VeSync {
   private async authByPWDOrOTM(
     userCountryCode: string,
   ): Promise<{ authorizeCode: string | null; bizToken: string | null }> {
-    const pwdHashed = crypto.createHash('md5').update(this.password).digest('hex');
+    const pwdHashed = crypto
+      .createHash('md5')
+      .update(this.password)
+      .digest('hex');
     const body = {
       email: this.email,
       method: 'authByPWDOrOTM',
@@ -393,7 +394,10 @@ export default class VeSync {
       );
     } catch (e) {
       // Fallback to smartapi host if accountapi ever blocks this
-      this.debugMode.debug('[AUTH] accountapi failed, falling back to smartapi', String(e));
+      this.debugMode.debug(
+        '[AUTH] accountapi failed, falling back to smartapi',
+        String(e),
+      );
       resp = await axios.post(
         '/globalPlatform/api/accountAuth/v1/authByPWDOrOTM',
         body,
@@ -401,8 +405,11 @@ export default class VeSync {
       );
     }
 
-    if (!resp?.data || resp.data.code !== 0 || !resp.data.result) {
-      this.debugMode.debug('[AUTH] Failed authByPWDOrOTM', JSON.stringify(resp?.data));
+    if (resp?.data?.code !== 0 || !resp.data.result) {
+      this.debugMode.debug(
+        '[AUTH] Failed authByPWDOrOTM',
+        JSON.stringify(resp?.data),
+      );
       throw new Error('VeSync authentication failed at step 1');
     }
 
@@ -513,7 +520,7 @@ export default class VeSync {
       const devices = list
         .filter(
           ({ deviceType, type }) =>
-            !!deviceTypes.find(({ isValid }) => isValid(deviceType)) &&
+            deviceTypes.some(({ isValid }) => isValid(deviceType)) &&
             type === 'wifi-air',
         )
         .map(VeSyncFan.fromResponse(this));

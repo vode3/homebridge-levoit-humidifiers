@@ -33,14 +33,14 @@ export type AccessoryThisType = ThisType<{
 }>;
 
 export default class VeSyncAccessory {
-  private humidifierService: Service;
-  private humiditySensorService: Service | undefined;
-  private lightService: Service | undefined;
-  private sleepService: Service | undefined;
-  private displayService: Service | undefined;
-  private mistService: Service | undefined;
-  private warmMistService: Service | undefined;
-  private autoProService: Service | undefined;
+  private readonly humidifierService: Service;
+  private readonly humiditySensorService: Service | undefined;
+  private readonly lightService: Service | undefined;
+  private readonly sleepService: Service | undefined;
+  private readonly displayService: Service | undefined;
+  private readonly mistService: Service | undefined;
+  private readonly warmMistService: Service | undefined;
+  private readonly autoProService: Service | undefined;
 
   public get UUID() {
     return this.device.uuid.toString();
@@ -57,7 +57,7 @@ export default class VeSyncAccessory {
         We add 1 to mistLevels to account for 0 as a potential level.
         Example: The Classic300s has 9 mist levels, so this function returns [0,1,2,3,4,5,6,7,8,9].
          */
-    const arr = [...Array(this.device.deviceType.mistLevels + 1).keys()];
+    const arr = [...new Array(this.device.deviceType.mistLevels + 1).keys()];
 
     return arr;
   }
@@ -71,7 +71,7 @@ export default class VeSyncAccessory {
          */
 
     const arr = [
-      ...Array((this.device.deviceType.warmMistLevels ?? 0) + 1).keys(),
+      ...new Array((this.device.deviceType.warmMistLevels ?? 0) + 1).keys(),
     ];
     return arr;
   }
@@ -84,13 +84,13 @@ export default class VeSyncAccessory {
     const config = platform.config;
     const accessories = config.accessories ? config.accessories : {};
     const mistAccessory =
-      accessories.mist != false && accessories.cool_mist != false;
-    const warmMistAccessory = accessories.warm_mist != false;
-    const nightLightAccessory = accessories.night_light != false;
-    const sleepModeAccessory = accessories.sleep_mode != false;
-    const displayAccessory = accessories.display != false;
-    const autoProAccessory = accessories.auto_pro != false;
-    const humiditySensor = accessories.humidity_sensor != false;
+      accessories.mist !== false && accessories.cool_mist !== false;
+    const warmMistAccessory = accessories.warm_mist !== false;
+    const nightLightAccessory = accessories.night_light !== false;
+    const sleepModeAccessory = accessories.sleep_mode !== false;
+    const displayAccessory = accessories.display !== false;
+    const autoProAccessory = accessories.auto_pro !== false;
+    const humiditySensor = accessories.humidity_sensor !== false;
 
     // Accessory info
     this.accessory
