@@ -568,16 +568,6 @@ export default class VeSync {
       const { authorizeCode, bizToken: initialBizToken } =
         await this.authByPWDOrOTM(this.countryCode);
 
-      if (!authorizeCode || typeof authorizeCode !== 'string' || authorizeCode.trim().length === 0) {
-        this.debugMode.debug(
-          '[LOGIN]',
-          'Step 1 returned an empty authorizeCode; cannot proceed to step 2.',
-        );
-        // increase backoff on failure (cap at 5 minutes)
-        this.loginBackoffMs = Math.min(this.loginBackoffMs * 2, 300000);
-        return false;
-      }
-
       this.debugMode.debug(
         '[LOGIN]',
         `Step 2: loginByAuthorizeCode on ${this.baseURL}…`,
@@ -761,10 +751,28 @@ export default class VeSync {
     const body: Record<string, unknown> = {
       method: 'loginByAuthorizeCode4Vesync',
       authorizeCode,
+      acceptLanguage: this.LANG,
+      accountID: '',
+      clientInfo: this.BRAND,
+      clientType: 'vesyncApp',
+      clientVersion: this.FULL_VERSION,
+      debugMode: false,
+      emailSubscriptions: false,
+      osInfo: this.OS.includes('iOS') ? 'iOS' : 'Android',
+      terminalId: this.terminalId,
+      timeZone: this.TIMEZONE,
+      token: '',
       userCountryCode: overrideCountryCode || userCountryCode,
-      ...(bizToken ? { bizToken } : {}),
       ...(regionChange ? { regionChange } : {}),
+      ...(currentRegion ? { region: String(currentRegion).toUpperCase() } : {}),
+      appID: this.appID,
+      sourceAppID: this.appID,
+      ...this.generateDetailBody(),
     };
+
+    if (bizToken) {
+      body.bizToken = bizToken;
+    }
 
     try {
       const resp = await axios.post(
