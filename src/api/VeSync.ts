@@ -3,6 +3,8 @@ import { Logger, PlatformConfig } from 'homebridge';
 import AsyncLock from 'async-lock';
 import { v4 as uuidv4 } from 'uuid';
 import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 import deviceTypes from './deviceTypes';
 import DebugMode from '../debugMode';
@@ -21,16 +23,12 @@ export enum BypassMethod {
   DRYING_MODE = 'setDryingMode',
 }
 
-// Start on US host for a small set of known non-EU regions – everyone else uses EU
+// Known API hosts
 const US_HOST = 'https://smartapi.vesync.com';
 const EU_HOST = 'https://smartapi.vesync.eu';
 const ACCOUNT_HOST = 'https://accountapi.vesync.com';
 
-/**
- * Determine the initial base URL for a given country code.
- * @param cc - The country code.
- * @returns The initial base URL.
- */
+// Start on US host for a small set of known non-EU regions – everyone else uses EU
 function initialHostForCountry(cc: string): string {
   const upper = cc.toUpperCase();
   if (['US', 'CA', 'MX', 'JP'].includes(upper)) return US_HOST;
@@ -39,6 +37,84 @@ function initialHostForCountry(cc: string): string {
 
 const lock = new AsyncLock();
 
+// Simple JWT timestamp decoder (best-effort, no verification)
+function decodeJwtTimestamps(token: string): { iat?: number; exp?: number } {
+  try {
+    const parts = token.split('.');
+    if (parts.length < 2) return {};
+    const part = parts[1];
+    if (!part) return {};
+    const payload = part
+      .replaceAll('-', '+')
+      .replaceAll('_', '/')
+      .padEnd(Math.ceil(part.length / 4) * 4, '=');
+    const json = Buffer.from(payload, 'base64').toString('utf8');
+    const obj = JSON.parse(json);
+    return { iat: obj.iat, exp: obj.exp };
+  } catch {
+    return {};
+  }
+}
+
+interface SessionData {
+  token: string;
+  accountId: string;
+  countryCode: string;
+  baseURL: string;
+  issuedAt?: number | null;
+  expiresAt?: number | null;
+  lastValidatedAt: number;
+}
+
+interface LoginResponse {
+  code?: number;
+  result?: {
+    token?: string;
+    accountID?: string;
+    countryCode?: string;
+    bizToken?: string;
+    currentRegion?: string;
+  };
+}
+
+interface DeviceResult {
+  humidity?: number;
+  targetHumidity?: number;
+  screenSwitch?: boolean;
+  workMode?: string;
+  powerSwitch?: number;
+  autoStopState?: boolean;
+  virtualLevel?: number;
+  configuration?: {
+    auto_target_humidity?: number;
+  };
+  display?: boolean;
+  mode?: string;
+  enabled?: boolean;
+  automatic_stop_reach_target?: boolean;
+  mist_virtual_level?: number;
+  warm_level?: number;
+  warm_enabled?: boolean;
+  night_light_brightness?: number;
+  rgbNightLight?: {
+    brightness?: number;
+    action?: string;
+    blue?: number;
+    green?: number;
+    red?: number;
+    colorMode?: string;
+    speed?: number;
+    colorSliderLocation?: number;
+  };
+}
+
+interface DeviceInfoResponse {
+  result?: {
+    result?: DeviceResult;
+  };
+  msg?: string;
+}
+
 export default class VeSync {
   private api?: AxiosInstance;
   private accountId?: string;
@@ -46,6 +122,9 @@ export default class VeSync {
 
   // dynamic baseURL; starts from config/country and may flip on cross-region
   private baseURL: string;
+
+  // track account country once known
+  private countryCode: string;
 
   private readonly VERSION = '5.6.60';
   private readonly FULL_VERSION = `VeSync ${this.VERSION}`;
@@ -59,18 +138,36 @@ export default class VeSync {
   private readonly terminalId = '2' + uuidv4().replaceAll('-', '');
   private readonly appID = Math.random().toString(36).substring(2, 10);
 
+  // Simple login backoff so we don’t hammer the API on repeated failures
+  private lastLoginAttempt = 0;
+  private loginBackoffMs = 10000; // start at 10s, max 5min
+
+  // Session persistence
+  private readonly sessionFilePath?: string;
+  // Treat tokens as valid up to ~25 days unless JWT says otherwise
+  private readonly TOKEN_MAX_AGE_MS = 25 * 24 * 60 * 60 * 1000;
+
   constructor(
     private readonly email: string,
     private readonly password: string,
     readonly config: PlatformConfig,
     public readonly debugMode: DebugMode,
     public readonly log: Logger,
+    sessionPath?: string,
   ) {
     const cc = (config.options?.countryCode || 'US').toUpperCase();
+    this.countryCode = cc;
     this.baseURL = config.options?.apiHost || initialHostForCountry(cc);
+
+    // Session file path: use provided path, or config option, or default to cwd
+    this.sessionFilePath =
+      sessionPath ||
+      config.options?.sessionPath ||
+      path.join(process.cwd(), 'vesync-session.json');
+
     this.debugMode.debug?.(
       '[CONFIG]',
-      `countryCode=${cc}, initialBaseURL=${this.baseURL}`,
+      `countryCode=${cc}, initialBaseURL=${this.baseURL}, sessionFile=${this.sessionFilePath}`,
     );
   }
 
@@ -133,6 +230,124 @@ export default class VeSync {
       },
     };
   }
+
+  // --- Session persistence ---------------------------------------------------
+
+  private async loadSessionFromDisk(): Promise<SessionData | null> {
+    if (!this.sessionFilePath) return null;
+    try {
+      const raw = await fs.promises.readFile(this.sessionFilePath, 'utf8');
+      const session = JSON.parse(raw) as SessionData;
+
+      if (!session.token || !session.accountId || !session.baseURL) {
+        this.debugMode.debug(
+          '[SESSION]',
+          'Session file missing required fields, ignoring.',
+        );
+        return null;
+      }
+
+      const now = Date.now();
+      const { iat, exp } = decodeJwtTimestamps(session.token);
+
+      if (exp && exp * 1000 <= now) {
+        this.debugMode.debug(
+          '[SESSION]',
+          'Persisted token is expired, ignoring.',
+        );
+        return null;
+      }
+
+      // Also protect against extremely old tokens if exp is missing
+      const issuedMs = session.issuedAt ?? (iat ? iat * 1000 : now);
+      if (now - issuedMs > this.TOKEN_MAX_AGE_MS * 1.5) {
+        this.debugMode.debug(
+          '[SESSION]',
+          'Persisted token appears too old, ignoring.',
+        );
+        return null;
+      }
+
+      this.debugMode.debug('[SESSION]', 'Loaded persisted session from disk.');
+      return session;
+    } catch (e: unknown) {
+      const error = e as { code?: string };
+      if (error.code !== 'ENOENT') {
+        this.debugMode.debug(
+          '[SESSION]',
+          'Failed to load session from disk:',
+          String(e),
+        );
+      }
+      return null;
+    }
+  }
+
+  private async saveSessionToDisk(): Promise<void> {
+    if (!this.sessionFilePath || !this.token || !this.accountId) return;
+    try {
+      const { iat, exp } = decodeJwtTimestamps(this.token);
+      const session: SessionData = {
+        token: this.token,
+        accountId: this.accountId,
+        countryCode: this.countryCode,
+        baseURL: this.baseURL,
+        issuedAt: iat ?? null,
+        expiresAt: exp ?? null,
+        lastValidatedAt: Date.now(),
+      };
+      await fs.promises.writeFile(
+        this.sessionFilePath,
+        JSON.stringify(session, null, 2),
+        'utf8',
+      );
+      this.debugMode.debug('[SESSION]', 'Persisted VeSync session to disk.');
+    } catch (e) {
+      this.debugMode.debug(
+        '[SESSION]',
+        'Failed to save session to disk:',
+        String(e),
+      );
+    }
+  }
+
+  private buildApiClient() {
+    if (!this.token || !this.accountId) {
+      throw new Error('Cannot build API client without token/accountId');
+    }
+
+    this.api = axios.create({
+      ...this.AXIOS_OPTIONS(),
+      headers: {
+        'content-type': 'application/json',
+        'accept-language': this.LANG,
+        accountid: this.accountId,
+        'user-agent': this.AGENT,
+        appversion: this.FULL_VERSION,
+        tz: this.TIMEZONE,
+        tk: this.token,
+      },
+    });
+
+    this.api.interceptors.response.use(
+      (resp) => resp,
+      async (err) => {
+        if (err?.response?.status === 401) {
+          this.debugMode.debug('[AUTH]', '401 detected, re-authenticating…');
+          const ok = await this.login();
+          if (ok && err.config && this.api) {
+            err.config.headers = err.config.headers || {};
+            err.config.headers.tk = this.token!;
+            err.config.headers.accountid = this.accountId!;
+            return this.api.request(err.config);
+          }
+        }
+        throw err;
+      },
+    );
+  }
+
+  // --- Public API ------------------------------------------------------------
 
   public async sendCommand(
     fan: VeSyncFan,
@@ -198,7 +413,7 @@ export default class VeSync {
     });
   }
 
-  public async getDeviceInfo(fan: VeSyncFan): Promise<any> {
+  public async getDeviceInfo(fan: VeSyncFan): Promise<DeviceInfoResponse> {
     return lock.acquire('api-call', async () => {
       if (!this.api) {
         throw new Error('The user is not logged in!');
@@ -240,11 +455,50 @@ export default class VeSync {
   }
 
   public async startSession(): Promise<boolean> {
-    this.debugMode.debug('[START SESSION]', 'Starting auth session...');
+    this.debugMode.debug('[START SESSION]', 'Starting auth session…');
+
+    // 1) Try to reuse persisted session
+    const session = await this.loadSessionFromDisk();
+    if (session) {
+      this.debugMode.debug('[SESSION]', 'Reusing persisted VeSync session.');
+      this.token = session.token;
+      this.accountId = session.accountId;
+      this.countryCode = (
+        session.countryCode ||
+        this.countryCode ||
+        'US'
+      ).toUpperCase();
+      this.baseURL =
+        this.config.options?.apiHost || session.baseURL || this.baseURL;
+
+      try {
+        this.buildApiClient();
+        return true;
+      } catch (e) {
+        this.debugMode.debug(
+          '[SESSION]',
+          'Failed to hydrate persisted session, falling back to fresh login:',
+          String(e),
+        );
+      }
+    } else {
+      this.debugMode.debug(
+        '[SESSION]',
+        'No valid persisted session found; logging in.',
+      );
+    }
+
+    // 2) Fresh login if no valid session
     const ok = await this.login();
-    if (ok) setInterval(this.login.bind(this), 1000 * 60 * 55);
+    if (!ok) {
+      this.log.error(
+        'VeSync initial login failed – check credentials / region.',
+      );
+    }
     return ok;
   }
+
+  // --- Login flow (auth + token + cross-region) ------------------------------
 
   private async login(): Promise<boolean> {
     return lock.acquire('auth-call', async () => {
@@ -252,34 +506,52 @@ export default class VeSync {
         throw new Error('Email and password are required');
       }
 
-      const userCountryCode = (
-        this.config.options?.countryCode || 'US'
+      // Avoid spamming VeSync on failing accounts
+      const now = Date.now();
+      const delta = now - this.lastLoginAttempt;
+      if (delta < this.loginBackoffMs) {
+        const wait = this.loginBackoffMs - delta;
+        this.debugMode.debug(
+          '[LOGIN]',
+          `Backing off for ${wait}ms before next login attempt…`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, wait));
+      }
+      this.lastLoginAttempt = Date.now();
+
+      const configuredCC = (
+        this.config.options?.countryCode ||
+        this.countryCode ||
+        'US'
       ).toUpperCase();
+      this.countryCode = configuredCC;
 
       this.debugMode.debug('[LOGIN]', 'Step 1: authByPWDOrOTM…');
       const { authorizeCode, bizToken: initialBizToken } =
-        await this.authByPWDOrOTM(userCountryCode);
+        await this.authByPWDOrOTM(this.countryCode);
 
       this.debugMode.debug(
         '[LOGIN]',
         `Step 2: loginByAuthorizeCode on ${this.baseURL}…`,
       );
       let step2Resp = await this.loginByAuthorizeCode4Vesync({
-        userCountryCode,
+        userCountryCode: this.countryCode,
         authorizeCode,
         host: this.baseURL,
       });
 
-      // --- Cross-region handling -----------------
-      //
-      // Look at ErrorTypes.CROSS_REGION and a bizToken in the result.
-      // Any non-zero code with a bizToken means "try again in the correct
-      // region" using the countryCode returned by the server.
-      if (step2Resp && step2Resp.code !== 0 && step2Resp.result?.bizToken) {
-        const result = step2Resp.result;
+      this.debugMode.debug(
+        '[LOGIN]',
+        'Raw step 2 response:',
+        JSON.stringify(step2Resp),
+      );
 
+      // Cross-region handling (similar to Python _login_token):
+      // If the server gives us a bizToken + countryCode, treat it as "cross region"
+      if (step2Resp?.result?.bizToken && step2Resp.result.countryCode) {
+        const result = step2Resp.result;
         const newCountryCode = (
-          result.countryCode || userCountryCode
+          result.countryCode ?? this.countryCode
         ).toUpperCase();
         const crossBizToken = result.bizToken || initialBizToken || null;
 
@@ -288,68 +560,62 @@ export default class VeSync {
           `Cross-region detected. Switching to countryCode=${newCountryCode} and retrying loginByAuthorizeCode4Vesync with regionChange=last_region…`,
         );
 
-        // Use country → host mapping like pyvesync._api_base_url_for_current_region()
         const regionHost = initialHostForCountry(newCountryCode);
-        this.baseURL = (this.config.options?.apiHost as string) || regionHost;
+        this.baseURL = this.config.options?.apiHost || regionHost;
+        this.countryCode = newCountryCode;
 
         step2Resp = await this.loginByAuthorizeCode4Vesync({
-          userCountryCode,
+          userCountryCode: this.countryCode,
           bizToken: crossBizToken,
           host: this.baseURL,
           regionChange: 'last_region',
           overrideCountryCode: newCountryCode,
           currentRegion: result.currentRegion,
         });
+
+        this.debugMode.debug(
+          '[LOGIN]',
+          'Raw step 2 response after cross-region retry:',
+          JSON.stringify(step2Resp),
+        );
       }
 
       if (
-        step2Resp?.code !== 0 ||
-        !step2Resp.result?.token ||
-        !step2Resp.result?.accountID
+        !step2Resp?.result?.token ||
+        step2Resp.code !== 0 ||
+        !step2Resp.result.accountID
       ) {
         this.debugMode.debug(
           '[LOGIN] Failed final step',
           JSON.stringify(step2Resp),
         );
+        // increase backoff on failure (cap at 5 minutes)
+        this.loginBackoffMs = Math.min(this.loginBackoffMs * 2, 300000);
         return false;
       }
 
-      const { token, accountID } = step2Resp.result;
+      // Reset backoff on success
+      this.loginBackoffMs = 10000;
+
+      const result = step2Resp.result;
+      if (!result?.token || !result.accountID) {
+        throw new Error('Invalid login response');
+      }
+      const { token, accountID, countryCode } = result;
 
       this.debugMode.debug('[LOGIN]', 'Authentication was successful');
 
       this.accountId = accountID;
       this.token = token;
+      if (!this.token) {
+        throw new Error('No token found in login response');
+      }
+      if (countryCode) {
+        this.countryCode = countryCode.toUpperCase();
+      }
 
-      this.api = axios.create({
-        ...this.AXIOS_OPTIONS(),
-        headers: {
-          'content-type': 'application/json',
-          'accept-language': this.LANG,
-          accountid: this.accountId!,
-          'user-agent': this.AGENT,
-          appversion: this.FULL_VERSION,
-          tz: this.TIMEZONE,
-          tk: this.token!,
-        },
-      });
-
-      this.api.interceptors.response.use(
-        (resp) => resp,
-        async (err) => {
-          if (err?.response?.status === 401) {
-            this.debugMode.debug('[AUTH]', '401 detected, re-authenticating…');
-            const ok = await this.login();
-            if (ok && err.config) {
-              err.config.headers = err.config.headers || {};
-              err.config.headers.tk = this.token!;
-              err.config.headers.accountid = this.accountId!;
-              return this.api!.request(err.config);
-            }
-          }
-          throw err;
-        },
-      );
+      this.buildApiClient();
+      await this.saveSessionToDisk();
       return true;
     });
   }
@@ -405,7 +671,7 @@ export default class VeSync {
       );
     }
 
-    if (resp?.data?.code !== 0 || !resp.data.result) {
+    if (!resp?.data?.result || resp.data.code !== 0) {
       this.debugMode.debug(
         '[AUTH] Failed authByPWDOrOTM',
         JSON.stringify(resp?.data),
@@ -425,7 +691,7 @@ export default class VeSync {
     regionChange?: 'last_region';
     overrideCountryCode?: string;
     currentRegion?: string;
-  }): Promise<any> {
+  }): Promise<LoginResponse | undefined> {
     const {
       userCountryCode,
       host,
@@ -436,7 +702,7 @@ export default class VeSync {
       currentRegion,
     } = opts;
 
-    const body: any = {
+    const body: Record<string, unknown> = {
       method: 'loginByAuthorizeCode4Vesync',
       authorizeCode,
       acceptLanguage: this.LANG,
@@ -475,6 +741,8 @@ export default class VeSync {
       return undefined;
     }
   }
+
+  // --- Devices ---------------------------------------------------------------
 
   public async getDevices(): Promise<VeSyncFan[]> {
     return lock.acquire('api-call', async () => {

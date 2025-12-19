@@ -419,9 +419,10 @@ export default class VeSyncFan {
         const data = await this.client.getDeviceInfo(this);
 
         this.lastCheck = Date.now();
+        const deviceResult = data?.result?.result;
         if (
-          !data?.result?.result &&
-          this.client.config.options.showOffWhenDisconnected
+          !deviceResult &&
+          this.client.config.options?.showOffWhenDisconnected
         ) {
           this._isOn = false;
           this._humidityLevel = 0;
@@ -431,43 +432,47 @@ export default class VeSyncFan {
           this._warmLevel = 0;
           this._brightnessLevel = 0;
           return;
-        } else if (!data?.result?.result) {
+        } else if (!deviceResult) {
           return;
         }
 
-        const result = data?.result?.result;
+        const result = deviceResult;
 
-        this._humidityLevel = result.humidity;
+        this._humidityLevel = (result.humidity as number) ?? 0;
         // Fields are different on newer models
         if (NewDevices.includes(this.model as DeviceName)) {
-          this._targetHumidity = result.targetHumidity;
-          this._displayOn = result.screenSwitch;
-          this._mode = result.workMode;
-          this._isOn = result.powerSwitch;
-          this._targetReached = result.autoStopState;
-          this._mistLevel = result.virtualLevel;
+          this._targetHumidity = (result.targetHumidity as number) ?? 0;
+          this._displayOn = (result.screenSwitch as boolean) ?? false;
+          this._mode = (result.workMode as Mode) ?? Mode.Auto;
+          this._isOn = (result.powerSwitch as number) === 1;
+          this._targetReached = (result.autoStopState as boolean) ?? false;
+          this._mistLevel = (result.virtualLevel as number) ?? 0;
         } else {
-          this._targetHumidity = result.configuration?.auto_target_humidity;
-          this._displayOn = result.display;
-          this._mode = result.mode;
-          this._isOn = result.enabled;
-          this._targetReached = result.automatic_stop_reach_target;
-          this._mistLevel = result.mist_virtual_level;
+          this._targetHumidity =
+            (result.configuration?.auto_target_humidity as number) ?? 0;
+          this._displayOn = (result.display as boolean) ?? false;
+          this._mode = (result.mode as Mode) ?? Mode.Auto;
+          this._isOn = (result.enabled as boolean) ?? false;
+          this._targetReached =
+            (result.automatic_stop_reach_target as boolean) ?? false;
+          this._mistLevel = (result.mist_virtual_level as number) ?? 0;
         }
 
-        this._warmLevel = result.warm_level;
-        this._warmEnabled = result.warm_enabled;
+        this._warmLevel = (result.warm_level as number) ?? 0;
+        this._warmEnabled = (result.warm_enabled as boolean) ?? false;
 
         this._brightnessLevel =
-          result.night_light_brightness ?? result.rgbNightLight?.brightness;
+          ((result.night_light_brightness ??
+            result.rgbNightLight?.brightness) as number) ?? 0;
         // RGB Light Devices Only:
-        this._lightOn = result.rgbNightLight?.action;
-        this._blue = result.rgbNightLight?.blue;
-        this._green = result.rgbNightLight?.green;
-        this._red = result.rgbNightLight?.red;
-        this._colorMode = result.rgbNightLight?.colorMode;
-        this._lightSpeed = result.rgbNightLight?.speed;
-        this._colorSliderLocation = result.rgbNightLight?.colorSliderLocation;
+        this._lightOn = (result.rgbNightLight?.action as string) ?? 'off';
+        this._blue = (result.rgbNightLight?.blue as number) ?? 0;
+        this._green = (result.rgbNightLight?.green as number) ?? 0;
+        this._red = (result.rgbNightLight?.red as number) ?? 0;
+        this._colorMode = (result.rgbNightLight?.colorMode as string) ?? '';
+        this._lightSpeed = (result.rgbNightLight?.speed as number) ?? 0;
+        this._colorSliderLocation =
+          (result.rgbNightLight?.colorSliderLocation as number) ?? 0;
 
         if (result.rgbNightLight) {
           const lightJson = {
@@ -486,9 +491,10 @@ export default class VeSyncFan {
             JSON.stringify(lightJson),
           );
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
         this.client.log.error(
-          'Failed to updateInfo due to unreachable device: ' + err?.message,
+          'Failed to updateInfo due to unreachable device: ' + message,
         );
         if (this.client.config.options.showOffWhenDisconnected) {
           this._isOn = false;

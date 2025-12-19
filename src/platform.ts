@@ -7,6 +7,7 @@ import {
   Logger,
   API,
 } from 'homebridge';
+import * as path from 'node:path';
 
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import VeSyncAccessory from './VeSyncAccessory';
@@ -37,12 +38,33 @@ export default class Platform implements DynamicPlatformPlugin {
     public readonly config: PlatformConfig,
     public readonly api: API,
   ) {
-    const { email, password, enableDebugMode } = this.config ?? {};
+    const { email, password } = this.config ?? {};
+    // Support backwards compatibility: check top-level first, then options
+    const enableDebugMode =
+      (this.config as { enableDebugMode?: boolean }).enableDebugMode ??
+      this.config.options?.enableDebugMode ??
+      false;
 
     this.debugger = new DebugMode(!!enableDebugMode, this.log);
     this.debugger.debug('[PLATFORM]', 'Debug mode enabled');
 
-    this.client = new VeSync(email, password, this.config, this.debugger, log);
+    // 👇 Tell VeSync where to store its session file (under Homebridge storage)
+    const storagePath = this.api.user.storagePath();
+    const defaultSessionPath = path.join(
+      storagePath,
+      'homebridge-levoit-humidifiers.session.json',
+    );
+    const sessionPath = this.config.options?.sessionPath || defaultSessionPath;
+    this.debugger.debug('[PLATFORM]', `Using sessionPath=${sessionPath}`);
+
+    this.client = new VeSync(
+      email,
+      password,
+      this.config,
+      this.debugger,
+      log,
+      sessionPath,
+    );
 
     this.api.on('didFinishLaunching', () => {
       this.discoverDevices();
@@ -71,16 +93,30 @@ export default class Platform implements DynamicPlatformPlugin {
       }
 
       this.log.error('The email and password are not correct!');
+      return;
     }
 
-    this.log.info('Connecting to the servers...');
-    await this.client.startSession();
-    this.log.info('Discovering devices...');
+    try {
+      this.log.info('Connecting to the VeSync servers...');
+      const ok = await this.client.startSession();
 
-    const devices = await this.client.getDevices();
-    await Promise.all(devices.map(this.loadDevice.bind(this)));
+      if (!ok) {
+        this.log.error(
+          'VeSync login failed – enable debug mode and check logs for [LOGIN]/[SESSION] messages.',
+        );
+        return;
+      }
 
-    this.checkOldDevices();
+      this.log.info('Discovering devices...');
+
+      const devices = await this.client.getDevices();
+      await Promise.all(devices.map(this.loadDevice.bind(this)));
+
+      this.checkOldDevices();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.log.error('Unexpected error during device discovery:', message);
+    }
   }
 
   private async loadDevice(device: VeSyncFan) {
@@ -124,16 +160,17 @@ export default class Platform implements DynamicPlatformPlugin {
       return this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [
         accessory,
       ]);
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
       this.log.error(
-        `Error for device: ${device.name}:${device.uuid} | ${error.message}`,
+        `Error for device: ${device.name}:${device.uuid} | ${message}`,
       );
       return null;
     }
   }
 
   private checkOldDevices() {
-    this.cachedAccessories.map((accessory) => {
+    this.cachedAccessories.forEach((accessory) => {
       const exists = this.registeredDevices.find(
         (device) => device.UUID === accessory.UUID,
       );
