@@ -29,10 +29,16 @@ const EU_HOST = 'https://smartapi.vesync.eu';
 const ACCOUNT_HOST = 'https://accountapi.vesync.com';
 
 // Start on US host for a small set of known non-EU regions – everyone else uses EU
+const EU_COUNTRY_CODES = new Set<string>([
+  'AL', 'AD', 'AT', 'BY', 'BE', 'BA', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI', 'FR', 'DE', 'GR', 'HU', 'IS', 'IE', 'IT', 'LV', 'LI',
+  'LT', 'LU', 'MT', 'MD', 'MC', 'ME', 'NL', 'MK', 'NO', 'PL', 'PT', 'RO', 'RU', 'SM', 'RS', 'SK', 'SI', 'ES', 'SE', 'CH', 'TR', 'UA',
+  'GB', 'UK',
+]);
+
 function initialHostForCountry(cc: string): string {
-  const upper = cc.toUpperCase();
-  if (['US', 'CA', 'MX', 'JP'].includes(upper)) return US_HOST;
-  return EU_HOST; // everything else starts on EU
+  const upper = (cc || '').toUpperCase();
+  if (EU_COUNTRY_CODES.has(upper)) return EU_HOST;
+  return US_HOST;
 }
 
 const lock = new AsyncLock();
@@ -60,7 +66,14 @@ interface SessionData {
   token: string;
   accountId: string;
   countryCode: string;
-  baseURL: string;
+
+  // Back-compat for existing persisted sessions
+  baseURL?: string;
+  apiBaseUrl?: string;
+
+  region?: string;
+  username?: string;
+
   issuedAt?: number | null;
   expiresAt?: number | null;
   lastValidatedAt: number;
@@ -68,6 +81,7 @@ interface SessionData {
 
 interface LoginResponse {
   code?: number;
+  msg?: string;
   result?: {
     token?: string;
     accountID?: string;
@@ -125,6 +139,8 @@ export default class VeSync {
 
   // track account country once known
   private countryCode: string;
+
+  private region?: string;
 
   private readonly VERSION = '5.6.60';
   private readonly FULL_VERSION = `VeSync ${this.VERSION}`;
@@ -207,9 +223,9 @@ export default class VeSync {
       timeZone: this.TIMEZONE,
       ...(includeAuth
         ? {
-            accountID: this.accountId,
-            token: this.token,
-          }
+          accountID: this.accountId,
+          token: this.token,
+        }
         : {}),
     };
   }
@@ -239,10 +255,20 @@ export default class VeSync {
       const raw = await fs.promises.readFile(this.sessionFilePath, 'utf8');
       const session = JSON.parse(raw) as SessionData;
 
-      if (!session.token || !session.accountId || !session.baseURL) {
+      const persistedBaseURL = session.apiBaseUrl || session.baseURL;
+
+      if (!session.token || !session.accountId || !persistedBaseURL) {
         this.debugMode.debug(
           '[SESSION]',
           'Session file missing required fields, ignoring.',
+        );
+        return null;
+      }
+
+      if (session.username && session.username !== this.email) {
+        this.debugMode.debug(
+          '[SESSION]',
+          'Persisted session is for a different account; ignoring.',
         );
         return null;
       }
@@ -268,6 +294,8 @@ export default class VeSync {
         return null;
       }
 
+      session.baseURL = persistedBaseURL;
+
       this.debugMode.debug('[SESSION]', 'Loaded persisted session from disk.');
       return session;
     } catch (e: unknown) {
@@ -291,11 +319,15 @@ export default class VeSync {
         token: this.token,
         accountId: this.accountId,
         countryCode: this.countryCode,
+        apiBaseUrl: this.baseURL,
         baseURL: this.baseURL,
+        region: this.region,
+        username: this.email,
         issuedAt: iat ?? null,
         expiresAt: exp ?? null,
         lastValidatedAt: Date.now(),
       };
+
       await fs.promises.writeFile(
         this.sessionFilePath,
         JSON.stringify(session, null, 2),
@@ -413,7 +445,7 @@ export default class VeSync {
     });
   }
 
-  public async getDeviceInfo(fan: VeSyncFan): Promise<DeviceInfoResponse> {
+  public async getDeviceInfo(fan: VeSyncFan): Promise<DeviceInfoResponse | null> {
     return lock.acquire('api-call', async () => {
       if (!this.api) {
         throw new Error('The user is not logged in!');
@@ -434,7 +466,7 @@ export default class VeSync {
           'VeSync cannot communicate with humidifier! Check the VeSync App.',
         );
         if (this.config.options?.showOffWhenDisconnected) {
-          return false;
+          return null;
         } else {
           throw new Error(
             'Device was unreachable. Ensure it is plugged in and connected to WiFi.',
@@ -463,13 +495,15 @@ export default class VeSync {
       this.debugMode.debug('[SESSION]', 'Reusing persisted VeSync session.');
       this.token = session.token;
       this.accountId = session.accountId;
-      this.countryCode = (
-        session.countryCode ||
-        this.countryCode ||
-        'US'
-      ).toUpperCase();
+      this.countryCode = (session.countryCode || this.countryCode || 'US').toUpperCase();
+
+      const persistedBaseURL = session.apiBaseUrl || session.baseURL;
       this.baseURL =
-        this.config.options?.apiHost || session.baseURL || this.baseURL;
+        this.config.options?.apiHost || persistedBaseURL || this.baseURL;
+
+      if (session.region) {
+        this.region = String(session.region).toUpperCase();
+      }
 
       try {
         this.buildApiClient();
@@ -526,6 +560,10 @@ export default class VeSync {
       ).toUpperCase();
       this.countryCode = configuredCC;
 
+      if (!this.config.options?.apiHost) {
+        this.baseURL = initialHostForCountry(this.countryCode);
+      }
+
       this.debugMode.debug('[LOGIN]', 'Step 1: authByPWDOrOTM…');
       const { authorizeCode, bizToken: initialBizToken } =
         await this.authByPWDOrOTM(this.countryCode);
@@ -546,18 +584,17 @@ export default class VeSync {
         JSON.stringify(step2Resp),
       );
 
-      // Cross-region handling (similar to Python _login_token):
-      // If the server gives us a bizToken + countryCode, treat it as "cross region"
-      if (step2Resp?.result?.bizToken && step2Resp.result.countryCode) {
+      const codeIsNonZero =
+        typeof step2Resp?.code === 'number' ? step2Resp.code !== 0 : true;
+
+      if (codeIsNonZero && step2Resp?.result?.bizToken && step2Resp.result.countryCode) {
         const result = step2Resp.result;
-        const newCountryCode = (
-          result.countryCode ?? this.countryCode
-        ).toUpperCase();
+        const newCountryCode = (result.countryCode ?? this.countryCode).toUpperCase();
         const crossBizToken = result.bizToken || initialBizToken || null;
 
         this.debugMode.debug(
           '[LOGIN]',
-          `Cross-region detected. Switching to countryCode=${newCountryCode} and retrying loginByAuthorizeCode4Vesync with regionChange=last_region…`,
+          `Cross-region detected. Switching to countryCode=${newCountryCode} and retrying…`,
         );
 
         const regionHost = initialHostForCountry(newCountryCode);
@@ -566,16 +603,17 @@ export default class VeSync {
 
         step2Resp = await this.loginByAuthorizeCode4Vesync({
           userCountryCode: this.countryCode,
+          authorizeCode,
           bizToken: crossBizToken,
           host: this.baseURL,
-          regionChange: 'last_region',
+          regionChange: 'lastRegion',
           overrideCountryCode: newCountryCode,
           currentRegion: result.currentRegion,
         });
 
         this.debugMode.debug(
           '[LOGIN]',
-          'Raw step 2 response after cross-region retry:',
+          'Raw step 2 response after retry:',
           JSON.stringify(step2Resp),
         );
       }
@@ -612,6 +650,14 @@ export default class VeSync {
       }
       if (countryCode) {
         this.countryCode = countryCode.toUpperCase();
+      }
+
+      if (result.currentRegion) {
+        this.region = String(result.currentRegion).toUpperCase();
+      }
+
+      if (!this.config.options?.apiHost) {
+        this.baseURL = initialHostForCountry(this.countryCode);
       }
 
       this.buildApiClient();
@@ -688,7 +734,7 @@ export default class VeSync {
     host: string;
     authorizeCode?: string | null;
     bizToken?: string | null;
-    regionChange?: 'last_region';
+    regionChange?: 'lastRegion';
     overrideCountryCode?: string;
     currentRegion?: string;
   }): Promise<LoginResponse | undefined> {
@@ -726,7 +772,6 @@ export default class VeSync {
 
     if (bizToken) {
       body.bizToken = bizToken;
-      body.authorizeCode = null;
     }
 
     try {

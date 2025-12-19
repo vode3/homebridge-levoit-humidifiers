@@ -48,7 +48,6 @@ export default class Platform implements DynamicPlatformPlugin {
     this.debugger = new DebugMode(!!enableDebugMode, this.log);
     this.debugger.debug('[PLATFORM]', 'Debug mode enabled');
 
-    // 👇 Tell VeSync where to store its session file (under Homebridge storage)
     const storagePath = this.api.user.storagePath();
     const defaultSessionPath = path.join(
       storagePath,
