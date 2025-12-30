@@ -66,7 +66,6 @@ This is a Homebridge plugin to control Levoit Humidifiers from Apple HomeKit.
 * Via the Homebridge UI, enter the Homebridge VeSync Client plugin settings.
 * Enter your VeSync app credentials.
 * Select which controls you want exposed. Humidity / Auto Mode can not be hidden.
-* Enter your 2-letter country ISO code (eg. US, DE, FR).
 * Setup the platform plugin as a child bridge for better performance
 * Save and restart Homebridge.
 
@@ -103,8 +102,8 @@ Via config.json:
         "humidity_sensor": true
       },
       "options": {
-        "showOffWhenDisconnected": false,
-        "countryCode": "US"
+        "enableDebugMode": false,
+        "showOffWhenDisconnected": false
       }
     }
   ]
@@ -123,7 +122,7 @@ set `showOffWhenDisconnected` to `true` in the config. The humidifiers will rema
 
 ### Enabling Debug Mode
 
-In the config file, add `enableDebugMode: true`
+To enable debug mode, add `enableDebugMode: true` to the `options` section of your config:
 
 ```json
 {
@@ -133,7 +132,9 @@ In the config file, add `enableDebugMode: true`
       "email": "email",
       "password": "password",
       "platform": "LevoitHumidifiers",
-      "enableDebugMode": true
+      "options": {
+        "enableDebugMode": true
+      }
     }
   ]
 }

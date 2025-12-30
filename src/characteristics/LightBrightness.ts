@@ -26,7 +26,7 @@ const characteristic: {
       // We allow 39 as a value so 40 doesn't turn off the device.
       // So never set the device to 39, since that's not actually supported
       if (value === 39) {
-        value + 1;
+        value = value + 1;
       }
       let action: string;
       if (value >= 40) {

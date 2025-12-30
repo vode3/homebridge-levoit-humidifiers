@@ -7,7 +7,7 @@ import {
 import { Mode } from '../api/VeSyncFan';
 
 import { AccessoryThisType } from '../VeSyncAccessory';
-import { DeviceName } from '../api/deviceTypes';
+import { DevicePrefix } from '../api/deviceTypes';
 
 const characteristic: {
   get: CharacteristicGetHandler;
@@ -29,10 +29,8 @@ const characteristic: {
         await this.device.changeMode(Mode.Sleep);
         break;
       case false:
-        // LEH_S601S_WUS has an auto and humidity mode, we want to revert to humidity for that model since Auto has its own switch
-        if (
-          [DeviceName.LEH_S601S_WUS, DeviceName.LEH_S601S_WUSR].includes(this.device.model as DeviceName)
-        ) {
+        // LEH_S601S models have an auto and humidity mode, we want to revert to humidity for those models since Auto has its own switch
+        if (this.device.model.includes(DevicePrefix.LEH_S601S)) {
           await this.device.changeMode(Mode.Humidity);
           break;
         } else {
