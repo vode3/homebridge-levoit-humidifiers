@@ -6,6 +6,7 @@ import {
   Service,
   Logger,
   API,
+  UnknownContext,
 } from 'homebridge';
 import * as path from 'node:path';
 
@@ -70,9 +71,9 @@ export default class Platform implements DynamicPlatformPlugin {
     });
   }
 
-  configureAccessory(accessory: VeSyncPlatformAccessory) {
+  configureAccessory(accessory: PlatformAccessory<UnknownContext>) {
     this.log.info('Loading accessory from cache:', accessory.displayName);
-    this.cachedAccessories.push(accessory);
+    this.cachedAccessories.push(accessory as VeSyncPlatformAccessory);
   }
 
   async discoverDevices() {

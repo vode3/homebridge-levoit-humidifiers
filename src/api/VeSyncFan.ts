@@ -432,7 +432,6 @@ export default class VeSyncFan {
           this._warmLevel = 0;
           this._brightnessLevel = 0;
           return;
-
         } else if (!deviceResult) {
           return;
         }
@@ -516,7 +515,33 @@ export default class VeSyncFan {
 
   public static readonly fromResponse =
     (client: VeSync) =>
-      ({
+    ({
+      deviceName,
+      mode,
+      deviceStatus,
+      mistLevel,
+      warmLevel,
+      warmEnabled,
+      brightnessLevel,
+      humidity,
+      targetHumidity,
+      targetReached,
+      lightOn,
+      lightSpeed,
+      red,
+      blue,
+      green,
+      colorMode,
+      colorSliderLocation,
+      configModule,
+      cid,
+      deviceRegion,
+      deviceType,
+      macID,
+      uuid,
+    }) =>
+      new VeSyncFan(
+        client,
         deviceName,
         mode,
         deviceStatus,
@@ -540,31 +565,5 @@ export default class VeSyncFan {
         deviceType,
         macID,
         uuid,
-      }) =>
-        new VeSyncFan(
-          client,
-          deviceName,
-          mode,
-          deviceStatus,
-          mistLevel,
-          warmLevel,
-          warmEnabled,
-          brightnessLevel,
-          humidity,
-          targetHumidity,
-          targetReached,
-          lightOn,
-          lightSpeed,
-          red,
-          blue,
-          green,
-          colorMode,
-          colorSliderLocation,
-          configModule,
-          cid,
-          deviceRegion,
-          deviceType,
-          macID,
-          uuid,
-        );
+      );
 }

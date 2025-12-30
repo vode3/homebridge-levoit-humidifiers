@@ -1,31 +1,34 @@
 name: Build and Lint
 
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     strategy:
+      fail-fast: false
       matrix:
-        # the Node.js versions to build on
-        node-version: [14.x, 16.x, 18.x, 20.x]
+        node-version: [20.19.0, 22.x]
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
-      - name: Use Node.js ${{ matrix.node-version }} 
-        uses: actions/setup-node@v2
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
+          cache: yarn
 
       - name: Install dependencies
-        run: npm install
+        run: yarn install --frozen-lockfile
 
       - name: Lint the project
-        run: npm run lint
+        run: yarn lint
 
       - name: Build the project
-        run: npm run build
+        run: yarn build
         env:
           CI: true
