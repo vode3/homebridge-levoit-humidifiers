@@ -1,14 +1,12 @@
 {
-  "version": "0.2.0",  
+  "version": "0.2.0",
   "configurations": [
     {
       "name": "Launch Debugging",
       "program": "node_modules/homebridge/bin/homebridge",
       "preLaunchTask": "npm: build",
       "request": "launch",
-      "skipFiles": [
-        "<node_internals>/**"
-      ],
+      "skipFiles": ["<node_internals>/**"],
       "type": "node",
       "restart": true
     }
