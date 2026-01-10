@@ -1,5 +1,9 @@
 import AsyncLock from 'async-lock';
-import deviceTypes, { DeviceName, DeviceType, NewDevices } from './deviceTypes';
+import deviceTypes, {
+  DevicePrefix,
+  DeviceType,
+  isNewFormatDevice,
+} from './deviceTypes';
 
 import VeSync, { BypassMethod } from './VeSync';
 
@@ -120,7 +124,7 @@ export default class VeSyncFan {
   public async setPower(power: boolean): Promise<boolean> {
     this.client.log.info('Setting Power to ' + power);
     let switchJson;
-    if (NewDevices.includes(this.model as DeviceName)) {
+    if (isNewFormatDevice(this.model)) {
       switchJson = {
         powerSwitch: power ? 1 : 0,
         id: 0,
@@ -169,7 +173,7 @@ export default class VeSyncFan {
 
     // Oasis 1000 uses camelcase instead of snakecase
     let humidityJson;
-    if (NewDevices.includes(this.model as DeviceName)) {
+    if (isNewFormatDevice(this.model)) {
       humidityJson = {
         targetHumidity: level,
         id: 0,
@@ -196,17 +200,7 @@ export default class VeSyncFan {
 
   public async changeMode(mode: Mode): Promise<boolean> {
     // LV600s models use "Humidity" mode instead of "Auto"
-    const humidity_models: readonly DeviceName[] = [
-      DeviceName.LV600S,
-      DeviceName.LV600S_REMOTE,
-      DeviceName.LV600S_EU,
-      DeviceName.LV600S_UK,
-      DeviceName.LV600S_JP,
-    ] as const;
-    if (
-      humidity_models.includes(this.model as DeviceName) &&
-      mode == Mode.Auto
-    ) {
+    if (this.model.includes(DevicePrefix.LV600S) && mode == Mode.Auto) {
       mode = Mode.Humidity;
     }
     // Some models use "AutoPro" mode instead of "Auto"
@@ -218,7 +212,7 @@ export default class VeSyncFan {
 
     // Oasis 1000 uses camelcase instead of snakecase
     let modeJson;
-    if (NewDevices.includes(this.model as DeviceName)) {
+    if (isNewFormatDevice(this.model)) {
       modeJson = {
         workMode: mode.toString(),
       };
@@ -268,7 +262,7 @@ export default class VeSyncFan {
 
     // Oasis 1000 uses camelcase instead of snakecase
     let displayJson;
-    if (NewDevices.includes(this.model as DeviceName)) {
+    if (isNewFormatDevice(this.model)) {
       displayJson = {
         screenSwitch: power ? 1 : 0,
         id: 0,
@@ -303,7 +297,7 @@ export default class VeSyncFan {
     // New models use different JSON keys
     let mistJson;
     const method = BypassMethod.MIST_LEVEL;
-    if (NewDevices.includes(this.model as DeviceName)) {
+    if (isNewFormatDevice(this.model)) {
       mistJson = {
         virtualLevel: mistLevel,
         levelType: 'mist',
@@ -440,7 +434,7 @@ export default class VeSyncFan {
 
         this._humidityLevel = (result.humidity as number) ?? 0;
         // Fields are different on newer models
-        if (NewDevices.includes(this.model as DeviceName)) {
+        if (isNewFormatDevice(this.model)) {
           this._targetHumidity = (result.targetHumidity as number) ?? 0;
           this._displayOn = (result.screenSwitch as boolean) ?? false;
           this._mode = (result.workMode as Mode) ?? Mode.Auto;
