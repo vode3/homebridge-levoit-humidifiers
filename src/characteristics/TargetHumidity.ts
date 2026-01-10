@@ -7,7 +7,7 @@ import {
 
 import { AccessoryThisType } from '../VeSyncAccessory';
 import { Mode } from '../api/VeSyncFan';
-import { DeviceName, NewDevices } from '../api/deviceTypes';
+import { DevicePrefix } from '../api/deviceTypes';
 
 const characteristic: {
   get: CharacteristicGetHandler;
@@ -25,13 +25,18 @@ const characteristic: {
     if (!this.device.isOn) {
       await this.device.setPower(true);
     }
-    if (NewDevices.includes(this.device.name as DeviceName)) {
+    if (this.device.model.startsWith(DevicePrefix.LV600S)) {
       await this.device.changeMode(Mode.Humidity);
     } else if (
-      this.device.mode == Mode.Manual ||
-      (this.device.deviceType.hasWarmMode && this.device.mode == Mode.Sleep)
+      this.device.mode === Mode.Manual ||
+      (this.device.mode === Mode.Sleep &&
+        (this.device.model.startsWith(DevicePrefix.LV600S) ||
+          this.device.model.startsWith(DevicePrefix.OASIS) ||
+          this.device.model.startsWith(DevicePrefix.OASIS_1000S)))
     ) {
-      await this.device.changeMode(Mode.Auto);
+      await this.device.changeMode(
+        this.device.deviceType.hasAutoProMode ? Mode.AutoPro : Mode.Auto,
+      );
     }
     switch (true) {
       case Number(humidity) < this.device.deviceType.minHumidityLevel:

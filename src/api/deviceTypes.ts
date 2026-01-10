@@ -42,16 +42,14 @@ export const DeviceName = {
 
 export type DeviceName = (typeof DeviceName)[keyof typeof DeviceName];
 
-export const NewDevices: readonly DeviceName[] = [
-  // Devices with new response formats
-  DeviceName.OASIS_1000S,
-  DeviceName.OASIS_1000S_EU,
-  DeviceName.OASIS_1000S_EUR,
-  DeviceName.OASIS_1000S_JP,
-  DeviceName.OASIS_1000S_UK,
-  DeviceName.LEH_S601S_WUS,
-  DeviceName.LEH_S601S_WUSR,
-] as const;
+/**
+ * New response format devices:
+ * - Oasis 1000S family (LUH-M101S-*)
+ * - LEH-S601S family (LEH-S601S-*)
+ */
+export const isNewFormatDevice = (model: string): boolean =>
+  model.includes(DevicePrefix.OASIS_1000S) ||
+  model.includes(DevicePrefix.LEH_S601S);
 
 export interface DeviceType {
   isValid: (input: string) => boolean;
@@ -161,8 +159,9 @@ const deviceTypes: DeviceType[] = [
     maxHumidityLevel: 80,
   },
   {
-    // LEH-S601S WUSR – AutoPro with lower min humidity
-    isValid: (input: string) => input.includes(DeviceName.LEH_S601S_WUSR),
+    // LEH-S601S WUSR variants (lower min humidity)
+    isValid: (input: string) =>
+      input.includes(DevicePrefix.LEH_S601S) && input.includes('WUSR'),
     hasAutoMode: true,
     hasAutoProMode: true,
     mistLevels: 9,
@@ -174,8 +173,8 @@ const deviceTypes: DeviceType[] = [
     maxHumidityLevel: 80,
   },
   {
-    // LEH-S601S WUS – AutoPro with higher min humidity
-    isValid: (input: string) => input.includes(DeviceName.LEH_S601S_WUS),
+    // LEH-S601S family (all other variants)
+    isValid: (input: string) => input.includes(DevicePrefix.LEH_S601S),
     hasAutoMode: true,
     hasAutoProMode: true,
     mistLevels: 9,
