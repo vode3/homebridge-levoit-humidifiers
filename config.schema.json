@@ -60,7 +60,7 @@
             "title": "Night Light Slider",
             "type": "boolean",
             "default": true,
-            "description": "Enable brightness slider / switch for the Night Light"
+            "description": "Enable the Night Light service, including brightness and color controls when supported"
           },
           "auto_pro": {
             "title": "Auto Pro Mode Switch",

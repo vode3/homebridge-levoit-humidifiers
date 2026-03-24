@@ -15,6 +15,8 @@ import LightState from './characteristics/LightState';
 import WarmMistLevel from './characteristics/WarmMistLevel';
 import WarmActive from './characteristics/WarmActive';
 import AutoProState from './characteristics/AutoProState';
+import LightHue from './characteristics/LightHue';
+import LightSaturation from './characteristics/LightSaturation';
 
 const HumidifierName = 'Humidifier';
 const HumiditySensorName = 'Humidity Sensor';
@@ -332,6 +334,18 @@ export default class VeSyncAccessory {
         .setProps(props)
         .onGet(LightBrightness.get.bind(this))
         .onSet(LightBrightness.set.bind(this));
+
+      if (this.device.deviceType.hasColorMode) {
+        this.lightService
+          .getCharacteristic(this.platform.Characteristic.Hue)
+          .onGet(LightHue.get.bind(this))
+          .onSet(LightHue.set.bind(this));
+
+        this.lightService
+          .getCharacteristic(this.platform.Characteristic.Saturation)
+          .onGet(LightSaturation.get.bind(this))
+          .onSet(LightSaturation.set.bind(this));
+      }
     } else {
       this.lightService = this.accessory.getService(NightLightName);
       if (this.lightService) {
