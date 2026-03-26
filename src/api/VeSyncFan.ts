@@ -117,7 +117,9 @@ export default class VeSyncFan {
   }
 
   public get lightSaturation() {
-    return VeSyncFan.rgbToHsv(this._red, this._green, this._blue).saturation * 100;
+    return (
+      VeSyncFan.rgbToHsv(this._red, this._green, this._blue).saturation * 100
+    );
   }
 
   constructor(
@@ -394,16 +396,13 @@ export default class VeSyncFan {
         : VeSyncFan.clamp(brightness, RGB_MIN_BRIGHTNESS, RGB_FULL_BRIGHTNESS);
     const hasExplicitColor =
       red !== undefined || green !== undefined || blue !== undefined;
-    const hasStoredColor = this.getRed !== 0 || this.getGreen !== 0 || this.getBlue !== 0;
+    const hasStoredColor =
+      this.getRed !== 0 || this.getGreen !== 0 || this.getBlue !== 0;
     const currentRed = hasStoredColor ? this.getRed : 255;
     const currentGreen = hasStoredColor ? this.getGreen : 255;
     const currentBlue = hasStoredColor ? this.getBlue : 255;
     const baseRed = VeSyncFan.clamp(red ?? currentRed, 0, 255);
-    const baseGreen = VeSyncFan.clamp(
-      green ?? currentGreen,
-      0,
-      255,
-    );
+    const baseGreen = VeSyncFan.clamp(green ?? currentGreen, 0, 255);
     const baseBlue = VeSyncFan.clamp(blue ?? currentBlue, 0, 255);
     const [payloadRed, payloadGreen, payloadBlue] =
       boundedBrightness === RGB_FULL_BRIGHTNESS
@@ -420,6 +419,18 @@ export default class VeSyncFan {
       baseGreen,
       baseBlue,
     );
+    const isDuplicateLightState =
+      this._lightOn === normalizedAction &&
+      this._brightnessLevel === boundedBrightness &&
+      this._red === baseRed &&
+      this._green === baseGreen &&
+      this._blue === baseBlue &&
+      this._colorMode === colorMode &&
+      this._colorSliderLocation === colorSliderLocation;
+
+    if (isDuplicateLightState) {
+      return true;
+    }
 
     const lightJson = {
       action: normalizedAction,
@@ -513,7 +524,8 @@ export default class VeSyncFan {
             Date.now() - this.lastLightSetAt < RGB_STALE_DATA_TIMEOUT_MS;
 
           if (!skipRgbUpdate) {
-            const rgbBrightness = (result.rgbNightLight.brightness as number) ?? 0;
+            const rgbBrightness =
+              (result.rgbNightLight.brightness as number) ?? 0;
             this._brightnessLevel = rgbBrightness;
             this._lightOn = (result.rgbNightLight.action as string) ?? 'off';
             this._colorMode = (result.rgbNightLight.colorMode as string) ?? '';
@@ -524,14 +536,17 @@ export default class VeSyncFan {
             const rawRed = (result.rgbNightLight.red as number) ?? 0;
             const rawGreen = (result.rgbNightLight.green as number) ?? 0;
             const rawBlue = (result.rgbNightLight.blue as number) ?? 0;
-            const [baseRed, baseGreen, baseBlue] =
-              rgbBrightness > 0 && rgbBrightness < RGB_FULL_BRIGHTNESS
+            const hasIncomingColor =
+              rawRed !== 0 || rawGreen !== 0 || rawBlue !== 0;
+            const [baseRed, baseGreen, baseBlue] = hasIncomingColor
+              ? rgbBrightness > 0 && rgbBrightness < RGB_FULL_BRIGHTNESS
                 ? VeSyncFan.normalizeRgbToFullBrightness(
                     rawRed,
                     rawGreen,
                     rawBlue,
                   )
-                : [rawRed, rawGreen, rawBlue];
+                : [rawRed, rawGreen, rawBlue]
+              : [this._red, this._green, this._blue];
 
             this._red = baseRed;
             this._green = baseGreen;
@@ -555,7 +570,8 @@ export default class VeSyncFan {
             JSON.stringify(lightJson),
           );
         } else {
-          this._brightnessLevel = (result.night_light_brightness as number) ?? 0;
+          this._brightnessLevel =
+            (result.night_light_brightness as number) ?? 0;
           this._lightOn = '';
           this._blue = 0;
           this._green = 0;
@@ -653,8 +669,9 @@ export default class VeSyncFan {
     blue2: number,
   ) {
     return (
-      (red1 - red2) ** 2 + (green1 - green2) ** 2 + (blue1 - blue2) ** 2
-    ) ** 0.5;
+      ((red1 - red2) ** 2 + (green1 - green2) ** 2 + (blue1 - blue2) ** 2) **
+      0.5
+    );
   }
 
   private static interpolateColor(
@@ -725,9 +742,11 @@ export default class VeSyncFan {
     }
 
     const match = boundedValue - chroma;
-    return rgb.map((channel) =>
-      Math.round((channel + match) * 255),
-    ) as [number, number, number];
+    return rgb.map((channel) => Math.round((channel + match) * 255)) as [
+      number,
+      number,
+      number,
+    ];
   }
 
   private static applyBrightnessToRgb(
@@ -769,8 +788,11 @@ export default class VeSyncFan {
 
       for (let step = 0; step <= 100; step++) {
         const fraction = step / 100;
-        const [interpRed, interpGreen, interpBlue] =
-          VeSyncFan.interpolateColor(startColor, endColor, fraction);
+        const [interpRed, interpGreen, interpBlue] = VeSyncFan.interpolateColor(
+          startColor,
+          endColor,
+          fraction,
+        );
         const distance = VeSyncFan.colorDistance(
           red,
           green,
@@ -790,16 +812,65 @@ export default class VeSyncFan {
     return Math.round(bestPosition);
   }
 
-  public async setLightColor(hue: number, saturation: number): Promise<boolean> {
-    const [red, green, blue] = VeSyncFan.hsvToRgb(
-      hue,
-      VeSyncFan.clamp(saturation / 100, 0, 1),
-      1,
+  private static colorSliderLocationToRgb(
+    colorSliderLocation: number,
+  ): [number, number, number] {
+    const gradient = VeSyncFan.RGB_NIGHTLIGHT_GRADIENT;
+    const boundedLocation = VeSyncFan.clamp(colorSliderLocation, 0, 100);
+    const segmentSize = 100 / (gradient.length - 1);
+    const segmentIndex = Math.min(
+      Math.floor(boundedLocation / segmentSize),
+      gradient.length - 2,
     );
+    const segmentStart = segmentIndex * segmentSize;
+    const fraction = (boundedLocation - segmentStart) / segmentSize;
+    const startColor = gradient[segmentIndex];
+    const endColor = gradient[segmentIndex + 1];
+
+    if (!startColor || !endColor) {
+      return [255, 255, 255];
+    }
+
+    return VeSyncFan.interpolateColor(startColor, endColor, fraction);
+  }
+
+  private static snapRgbToNightlightGradient(
+    red: number,
+    green: number,
+    blue: number,
+  ): [number, number, number] {
+    const colorSliderLocation = VeSyncFan.rgbToColorSliderLocation(
+      red,
+      green,
+      blue,
+    );
+    return VeSyncFan.colorSliderLocationToRgb(colorSliderLocation);
+  }
+
+  private static hueToNightlightGradientColor(
+    hue: number,
+  ): [number, number, number] {
+    const [red, green, blue] = VeSyncFan.hsvToRgb(hue, 1, 1);
+    return VeSyncFan.snapRgbToNightlightGradient(red, green, blue);
+  }
+
+  public async setLightColor(
+    hue: number,
+    saturation: number,
+  ): Promise<boolean> {
+    void saturation;
+    const [snappedRed, snappedGreen, snappedBlue] =
+      VeSyncFan.hueToNightlightGradientColor(hue);
     const brightness =
       this.brightnessLevel > 0 ? this.brightnessLevel : RGB_MIN_BRIGHTNESS;
     const action = this.lightOn === 'on' ? 'on' : 'off';
 
-    return this.setLightStatus(action, brightness, red, green, blue);
+    return this.setLightStatus(
+      action,
+      brightness,
+      snappedRed,
+      snappedGreen,
+      snappedBlue,
+    );
   }
 }

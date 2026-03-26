@@ -6,6 +6,7 @@ import {
 } from 'homebridge';
 
 import { AccessoryThisType } from '../VeSyncAccessory';
+import { queueLightColorUpdate } from './LightColorUpdate';
 
 const characteristic: {
   get: CharacteristicGetHandler;
@@ -16,11 +17,7 @@ const characteristic: {
     return this.device.lightHue;
   },
   set: async function (value: CharacteristicValue) {
-    await this.device.updateInfo();
-    await this.device.setLightColor(
-      Number(value),
-      this.device.lightSaturation,
-    );
+    await queueLightColorUpdate(this.device, { hue: Number(value) });
   },
 };
 

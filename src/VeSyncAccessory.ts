@@ -85,6 +85,10 @@ export default class VeSyncAccessory {
     const { manufacturer, model, mac } = this.device;
     const config = platform.config;
     const accessories = config.accessories ? config.accessories : {};
+    const targetHumidifierState =
+      this.platform.Characteristic.TargetHumidifierDehumidifierState;
+    const currentHumidifierState =
+      this.platform.Characteristic.CurrentHumidifierDehumidifierState;
     const mistAccessory =
       accessories.mist !== false && accessories.cool_mist !== false;
     const warmMistAccessory = accessories.warm_mist !== false;
@@ -125,7 +129,7 @@ export default class VeSyncAccessory {
         this.platform.Characteristic.TargetHumidifierDehumidifierState,
       )
       .setProps({
-        validValues: [1],
+        validValues: [targetHumidifierState.HUMIDIFIER],
       })
       .onGet(TargetState.get.bind(this));
 
@@ -134,7 +138,10 @@ export default class VeSyncAccessory {
         this.platform.Characteristic.CurrentHumidifierDehumidifierState,
       )
       .setProps({
-        validValues: [1, 2],
+        validValues: [
+          currentHumidifierState.IDLE,
+          currentHumidifierState.HUMIDIFYING,
+        ],
       })
       .onGet(CurrentState.get.bind(this));
 
@@ -317,7 +324,7 @@ export default class VeSyncAccessory {
       let props: object;
       if (this.device.deviceType.hasColorMode) {
         props = {
-          minValue: 39,
+          minValue: 0,
           maxValue: 100,
         };
       } else {
